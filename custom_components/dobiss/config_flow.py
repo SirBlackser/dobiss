@@ -25,7 +25,6 @@ class DobissConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """The config flow for the Dobiss Domotics integration."""
 
     VERSION = 1
-    CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
 
     async def async_step_user(self, user_input=None):
         return await setupStep(self, user_input, True, "user")
