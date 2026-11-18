@@ -3,7 +3,6 @@ Helper module for communicating with a Dobiss home automation system.
 """
 
 import re
-import socket
 import logging
 import asyncio
 from enum import IntEnum
@@ -163,12 +162,13 @@ class DobissSystem:
         """Disconnect from the connected Dobiss system."""
         _LOGGER.info("Disconnecting from Dobiss system")
         try:
-            if self.socket:
-                self.socket.close()
-        except socket.error as e:
+            if self._writer is not None:
+                self._writer.close()
+        except OSError as e:
             _LOGGER.error(f"Dobiss socket error {str(e)}")
         finally:
-            self.socket = None
+            self._reader = None
+            self._writer = None
             self._connected = False
 
     async def sendData(self, data):
@@ -191,7 +191,7 @@ class DobissSystem:
 
     async def reconnect(self, data):
         _LOGGER.info("Dobiss for the reconnect")
-        await self.disconnect()
+        self.disconnect()
         await self.connect()
         if data:
             await self.sendData(data)
