@@ -38,3 +38,14 @@ The main differences for this fork are:
 Recommendations:
 - For most setups, 5–10 seconds balances responsiveness and controller load well.
 - Setting very low intervals (e.g., <3 seconds) may increase network/CPU load and could make the controller less responsive if multiple clients are connected.
+
+
+## Ventilation
+
+Ventilation units whose speeds are wired as separate Dobiss outputs (for example `Ventilatie 0`, `Ventilatie 2` and `Ventilatie 3`) are combined into a single fan entity instead of separate switches. Outputs are grouped when they are of the fan type, or when their name contains "ventil", and their names differ only in a trailing digit.
+
+- Only one mode can be active: selecting a mode switches the other modes' outputs off first.
+- The mode without an output of its own (usually 1) is the default, which runs when all mode outputs are off.
+- Modes are exposed as presets (`0`–`3`) and as the speed slider (1 = 33%, 2 = 66%, 3 = 100%). Turning the fan off selects mode 0; turning it on selects the default mode.
+
+The old per-mode entities will show as unavailable after updating and can be removed from Home Assistant.
