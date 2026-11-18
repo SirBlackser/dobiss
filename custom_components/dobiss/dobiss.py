@@ -2,6 +2,7 @@
 Helper module for communicating with a Dobiss home automation system.
 """
 
+import re
 import socket
 import logging
 import asyncio
@@ -48,32 +49,82 @@ class DobissSystem:
         """True if the socket is connected"""
         return self._connected
 
+    # Outputs named like "Ventilatie 0", "Ventilatie 2", "Ventilatie 3" are the
+    # relays that select one speed of a single ventilation unit.
+    _MODE_NAME_RE = re.compile(r'^(?P<base>.*?\S)[\s_\-]*(?P<mode>\d)$')
+
+    def _mode_output_info(self, output):
+        """Return (base name, mode) if this output selects a ventilation mode, else None."""
+        match = DobissSystem._MODE_NAME_RE.match(output['name'])
+        if not match:
+            return None
+        base = match.group('base').strip()
+        if output['type'] != DobissSystem.OutputType.Fan and 'ventil' not in base.lower():
+            return None
+        return base, int(match.group('mode'))
+
     @property
-    def lights(self):
-        result = []
+    def ventilation_groups(self):
+        """Group the per-speed outputs of a ventilation unit into one entry.
+
+        Only one speed can be active at a time. The speed that has no output of
+        its own (typically 1) is the unit's default: it runs when all of the
+        speed relays are off.
+        """
+        groups = {}
         for output in self.outputs:
-            if output['type'] == DobissSystem.OutputType.Light:
-                result.append(output)
+            info = self._mode_output_info(output)
+            if info is None:
+                continue
+            base, mode = info
+            group = groups.setdefault(base.lower(), {'name': base, 'modes': {}})
+            # If two outputs claim the same mode, keep the first one
+            group['modes'].setdefault(mode, output)
+
+        result = []
+        for group in groups.values():
+            # A single numbered output is not a multi-speed unit
+            if len(group['modes']) < 2:
+                continue
+            modes = group['modes']
+            max_mode = max(max(modes), 1)
+            missing = [m for m in range(1, max_mode + 1) if m not in modes]
+            if missing:
+                group['default_mode'] = missing[0]
+            else:
+                positive = sorted(m for m in modes if m > 0)
+                group['default_mode'] = positive[0] if positive else min(modes)
+            group['all_modes'] = sorted(set(modes) | set(missing))
+            result.append(group)
 
         return result
+
+    def _grouped_output_keys(self):
+        return {
+            (output['moduleAddress'], output['index'])
+            for group in self.ventilation_groups
+            for output in group['modes'].values()
+        }
+
+    def _outputs_of_type(self, output_type):
+        grouped = self._grouped_output_keys()
+        return [
+            output for output in self.outputs
+            if output['type'] == output_type
+            and (output['moduleAddress'], output['index']) not in grouped
+        ]
+
+    @property
+    def lights(self):
+        return self._outputs_of_type(DobissSystem.OutputType.Light)
 
     @property
     def fans(self):
-        result = []
-        for output in self.outputs:
-            if output['type'] == DobissSystem.OutputType.Fan:
-                result.append(output)
-
-        return result
+        return self._outputs_of_type(DobissSystem.OutputType.Fan)
 
     @property
     def plugs(self):
-        result = []
-        for output in self.outputs:
-            if output['type'] == DobissSystem.OutputType.Plug:
-                result.append(output)
-
-        return result
+        return self._outputs_of_type(DobissSystem.OutputType.Plug)
 
     async def connect(self):
         """Connect to a Dobiss system.
@@ -372,6 +423,24 @@ class DobissSystem:
         _LOGGER.debug("setOff")
         action = DobissSystem.Action.TurnOff
         await self.sendAction(moduleAddr, outputIndex, action)
+
+    async def setExclusive(self, outputs_off, output_on=None):
+        """Turn a set of outputs off and then (optionally) one output on,
+        using a single connection, so at most one ventilation mode is active."""
+        _LOGGER.debug("setExclusive")
+        established_here = False
+        if not self.connected:
+            await self.connect()
+            established_here = True
+        try:
+            # Switch the other modes off first so two relays are never on together
+            for output in outputs_off:
+                await self.sendAction(output['moduleAddress'], output['index'], DobissSystem.Action.TurnOff)
+            if output_on is not None:
+                await self.sendAction(output_on['moduleAddress'], output_on['index'], DobissSystem.Action.TurnOn)
+        finally:
+            if established_here:
+                self.disconnect()
 
     async def toggle(self, moduleAddr, outputIndex):
         """Toggle an output."""
