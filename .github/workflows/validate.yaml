@@ -16,6 +16,6 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
-          # The upstream code (avlemos/dobiss) ships without a license, so this
-          # fork cannot add one on the authors' behalf. Skip that single check.
-          ignore: "license"
+          # Repository-level checks that don't apply to this personal fork
+          # (issues are off, no topics, no license file); the code checks still run.
+          ignore: "issues topics license"
