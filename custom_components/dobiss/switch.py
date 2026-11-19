@@ -2,9 +2,9 @@
 import logging
 from .dobiss import DobissSystem
 from .const import DOMAIN
+from .entity import DobissEntity
 
 from homeassistant.components.switch import SwitchEntity, SwitchDeviceClass
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     _LOGGER.info("Dobiss plugs added.")
 
 
-class HomeAssistantDobissPlug(CoordinatorEntity, SwitchEntity):
+class HomeAssistantDobissPlug(DobissEntity, SwitchEntity):
     """Representation of a Dobiss plug in HomeAssistant."""
 
     def __init__(self, coordinator, plug):
@@ -34,7 +34,6 @@ class HomeAssistantDobissPlug(CoordinatorEntity, SwitchEntity):
         super().__init__(coordinator)
 
         """Initialize a DobissPlug."""
-        self.dobiss = coordinator.dobiss
         self._plug = plug
         self._name = plug['name']
 
@@ -52,18 +51,6 @@ class HomeAssistantDobissPlug(CoordinatorEntity, SwitchEntity):
     def name(self):
         """Return the display name of this plug."""
         return self._name
-
-    @property
-    def device_info(self):
-        """Return device info to group all entities under the Dobiss controller."""
-        host = getattr(self.dobiss, 'host', 'dobiss')
-        port = getattr(self.dobiss, 'port', None)
-        ident = f"{host}:{port}" if port is not None else str(host)
-        return {
-            "identifiers": {(DOMAIN, ident)},
-            "name": f"Dobiss Controller {host}",
-            "manufacturer": "Dobiss",
-        }
 
     @property
     def device_class(self):
@@ -84,14 +71,14 @@ class HomeAssistantDobissPlug(CoordinatorEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs):
         """Instruct the plug to switch on.
         """
-        await self.dobiss.setOn(self._plug['moduleAddress'], self._plug['index'])
+        await self._command(self.dobiss.setOn(self._plug['moduleAddress'], self._plug['index']))
 
         # Poll states
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Instruct the plug to turn off."""
-        await self.dobiss.setOff(self._plug['moduleAddress'], self._plug['index'])
+        await self._command(self.dobiss.setOff(self._plug['moduleAddress'], self._plug['index']))
 
         # Poll states
         await self.coordinator.async_request_refresh()
