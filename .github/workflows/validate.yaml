@@ -16,3 +16,6 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
+          # Repository-level checks that don't apply to this personal fork
+          # (issues are off, no topics, no license file); the code checks still run.
+          ignore: "issues topics license"
