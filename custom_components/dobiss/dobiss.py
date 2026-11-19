@@ -9,11 +9,17 @@ from enum import IntEnum
 
 RECV_SIZE = 1024
 MAX_NUM_RETRIES = 10
+CONNECT_RETRIES = 3  # Connection attempts before giving up (1s, 2s backoff)
+CONNECT_TIMEOUT = 5  # Seconds to wait for the TCP connection to open
 TIMEOUT = 1  # We can use a short timeout on the LAN
 ACK_TIMEOUT = 2  # Seconds to wait for the controller to echo a command
 RETRY_DELAY = 1  # Set the delay between retries in seconds
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class DobissConnectionError(ConnectionError):
+    """The Dobiss controller could not be reached or gave no valid answer."""
 
 
 class DobissSystem:
@@ -136,23 +142,26 @@ class DobissSystem:
 
     async def connect(self):
         """Connect to a Dobiss system.
-           Keeps trying to connect until it is successfully connected.
+           Tries a few times and raises DobissConnectionError if it can't connect.
         """
         async with self._connect_lock:
             await self._connect_with_retries()
+        if not self._connected:
+            raise DobissConnectionError(
+                f"Cannot connect to the Dobiss controller at {self.host}:{self.port}")
 
     async def _connect_with_retries(self):
         retry_delay = 1  # Initial delay in seconds
         retries = 0
-        while not self._connected and retries < MAX_NUM_RETRIES:
+        while not self._connected and retries < CONNECT_RETRIES:
             try:
                 _LOGGER.info("connect through connect_logic")
                 await self.connect_logic()
-            except OSError as e:
-                _LOGGER.error(f"Dobiss socket error while trying to connect: {str(e)}")
+            except (OSError, asyncio.TimeoutError) as e:
+                _LOGGER.warning(f"Dobiss socket error while trying to connect: {str(e) or type(e).__name__}")
                 self._connected = False
                 retries += 1
-                if retries < MAX_NUM_RETRIES:
+                if retries < CONNECT_RETRIES:
                     _LOGGER.debug(f"Retrying in {retry_delay} seconds...")
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
@@ -162,7 +171,8 @@ class DobissSystem:
 
     async def connect_logic(self):
         _LOGGER.info(f"Connecting to Dobiss system at IP {self.host} and port {self.port}")
-        self._reader, self._writer = await asyncio.open_connection(self.host, self.port)
+        self._reader, self._writer = await asyncio.wait_for(
+            asyncio.open_connection(self.host, self.port), CONNECT_TIMEOUT)
         self._connected = True
         _LOGGER.info("Connected to Dobiss system.")
 
@@ -187,8 +197,7 @@ class DobissSystem:
         _LOGGER.debug(f"sendData {str(data)}")
 
         if self._writer is None:
-            _LOGGER.debug("We are not ready yet to sendData")
-            return False
+            raise DobissConnectionError("Not connected to the Dobiss controller")
 
         try:
             self._writer.write(data)
@@ -247,8 +256,21 @@ class DobissSystem:
 
         return responseData
 
+    async def test_connection(self):
+        """Check that the controller answers. Raises DobissConnectionError if not."""
+        await self.connect()
+        try:
+            await self.importInstallation()
+        finally:
+            self.disconnect()
+
     async def importFullInstallation(self):
         """Import the installation, all modules, their outputs and their status."""
+
+        # Start from scratch so a re-import doesn't duplicate outputs
+        self.modules = {}
+        self.outputs = []
+        self.values = {}
 
         # Import installation
         await self.importInstallation()
@@ -271,9 +293,8 @@ class DobissSystem:
             installationData = await self.receiveResponse(len(data), 16)
 
         if len(installationData) != 16:
-            _LOGGER.error(
+            raise DobissConnectionError(
                 f"Invalid data received trying to import installation: received {len(installationData)} bytes instead of 16")
-            return
 
         # Parse the installation
         self.availableModules = []
@@ -307,8 +328,8 @@ class DobissSystem:
             moduleData = await self.receiveResponse(len(data), 16)
 
         if len(moduleData) != 16:
-            _LOGGER.error(f"Invalid data received trying to import module: received {len(moduleData)} bytes instead of 16")
-            return
+            raise DobissConnectionError(
+                f"Invalid data received trying to import module {moduleAddr}: received {len(moduleData)} bytes instead of 16")
 
         # moduleAddr = ord(moduleData[0])
         # moduleType = ord(moduleData[14])
@@ -359,13 +380,12 @@ class DobissSystem:
             outputsData = await self.receiveResponse(len(data), 32 * outputCount)
 
         if len(outputsData) != 32 * outputCount:
-            _LOGGER.error(
-                f"Invalid data received trying to import module: received {len(outputsData)} bytes instead of {32 * outputCount}")
-            return
+            raise DobissConnectionError(
+                f"Invalid data received trying to import the outputs of module {moduleAddr}: received {len(outputsData)} bytes instead of {32 * outputCount}")
 
         for outputIndex in range(0, outputCount):
             line = outputsData[outputIndex * 32: (outputIndex + 1) * 32]
-            outputName = line[0:30].strip().decode()
+            outputName = line[0:30].strip().decode(errors='replace')
             outputType = DobissSystem.OutputType(line[30])
             groupIndex = line[31]
 
@@ -395,8 +415,8 @@ class DobissSystem:
             statusData = await self.receiveResponse(len(data), 16)
 
         if len(statusData) != 16:
-            _LOGGER.error(f"Invalid data received trying to import module: received {len(statusData)} bytes instead of 16")
-            return
+            raise DobissConnectionError(
+                f"Invalid data received trying to read the status of module {moduleAddr}: received {len(statusData)} bytes instead of 16")
 
         if not moduleAddr in self.values:
             self.values[moduleAddr] = []

@@ -12,7 +12,9 @@
             }
         },
         "error": {
-            "invalid_host": "We cannot connect to the host"
+            "invalid_host": "We cannot connect to the host",
+            "cannot_connect": "Kan geen verbinding maken met de Dobiss LAN-controller. Controleer het IP-adres en de poort, en of de controller aan staat.",
+            "unknown": "Onverwachte fout, zie het Home Assistant-logboek."
         },
         "abort": {
             "cannot_connect": "Unable to connect to the LAN controller",
@@ -29,10 +31,16 @@
                     "port": "The port to connect to",
                     "scan_interval": "Scan-interval (seconden)"
                 }
+            },
+            "covers": {
+                "title": "Looptijden van screens en rolluiken",
+                "description": "Geef per screen of rolluik in hoeveel seconden het duurt om volledig te openen en volledig te sluiten. Home Assistant schat dan de positie en kan het naar een bepaalde positie sturen. Laat 0 staan voor geen positie."
             }
         },
         "error": {
-            "invalid_host": "We cannot connect to the host"
+            "invalid_host": "We cannot connect to the host",
+            "cannot_connect": "Kan geen verbinding maken met de Dobiss LAN-controller. Controleer het IP-adres en de poort, en of de controller aan staat.",
+            "unknown": "Onverwachte fout, zie het Home Assistant-logboek."
         },
         "abort": {
             "cannot_connect": "Unable to connect to the LAN controller",

@@ -3,10 +3,10 @@ import logging
 # import voluptuous as vol
 from .dobiss import DobissSystem
 from .const import DOMAIN
+from .entity import DobissEntity
 # import asyncio
 
 from homeassistant.components.light import ColorMode, ATTR_BRIGHTNESS, LightEntity, LightEntityFeature
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     _LOGGER.info("Dobiss lights added.")
 
 
-class HomeAssistantDobissLight(CoordinatorEntity, LightEntity):
+class HomeAssistantDobissLight(DobissEntity, LightEntity):
     """Representation of a Dobiss light in HomeAssistant."""
 
     def __init__(self, coordinator, light):
@@ -35,7 +35,6 @@ class HomeAssistantDobissLight(CoordinatorEntity, LightEntity):
         super().__init__(coordinator)
 
         """Initialize a DobissLight."""
-        self.dobiss = coordinator.dobiss
         self._light = light
         self._name = light['name']
 
@@ -62,18 +61,6 @@ class HomeAssistantDobissLight(CoordinatorEntity, LightEntity):
     def name(self):
         """Return the display name of this light."""
         return self._name
-
-    @property
-    def device_info(self):
-        """Return device info to group all entities under the Dobiss controller."""
-        host = getattr(self.dobiss, 'host', 'dobiss')
-        port = getattr(self.dobiss, 'port', None)
-        ident = f"{host}:{port}" if port is not None else str(host)
-        return {
-            "identifiers": {(DOMAIN, ident)},
-            "name": f"Dobiss Controller {host}",
-            "manufacturer": "Dobiss",
-        }
 
     @property
     def brightness(self):
@@ -111,10 +98,10 @@ class HomeAssistantDobissLight(CoordinatorEntity, LightEntity):
         is_relay = self.dobiss.modules[self._light['moduleAddress']]['type'] == DobissSystem.ModuleType.Relais
         if is_relay:
             # Relays are on/off only; always turn on to 100%
-            await self.dobiss.setOn(self._light['moduleAddress'], self._light['index'], 100)
+            await self._command(self.dobiss.setOn(self._light['moduleAddress'], self._light['index'], 100))
         else:
             pct = int(kwargs.get(ATTR_BRIGHTNESS, 255) * 100 / 255)
-            await self.dobiss.setOn(self._light['moduleAddress'], self._light['index'], pct)
+            await self._command(self.dobiss.setOn(self._light['moduleAddress'], self._light['index'], pct))
         await self.coordinator.async_request_refresh()
 
     @property
@@ -133,5 +120,5 @@ class HomeAssistantDobissLight(CoordinatorEntity, LightEntity):
     async def async_turn_off(self, **kwargs):
         """Instruct the light to turn off."""
         _LOGGER.debug("async_turn_off")
-        await self.dobiss.setOff(self._light['moduleAddress'], self._light['index'])
+        await self._command(self.dobiss.setOff(self._light['moduleAddress'], self._light['index']))
         await self.coordinator.async_request_refresh()

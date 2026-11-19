@@ -12,7 +12,9 @@
             }
         },
         "error": {
-            "invalid_host": "Não conseguimos ligar ao host"
+            "invalid_host": "Não conseguimos ligar ao host",
+            "cannot_connect": "Não foi possível ligar ao controlador LAN Dobiss. Verifique o endereço IP, a porta e se o controlador está ligado.",
+            "unknown": "Erro inesperado, consulte o registo do Home Assistant."
         },
         "abort": {
             "cannot_connect": "Não foi possível ligar ao controlador LAN",
@@ -29,10 +31,16 @@
                     "port": "Porta para ligação",
                     "scan_interval": "Intervalo em que obtemos os estados de saída"
                 }
+            },
+            "covers": {
+                "title": "Tempos de percurso dos estores",
+                "description": "Indique quantos segundos cada estore demora a abrir e a fechar completamente. O Home Assistant estima então a posição e pode mover o estore para uma posição. Deixe 0 para não usar posição."
             }
         },
         "error": {
-            "invalid_host": "Não conseguimos ligar ao host"
+            "invalid_host": "Não conseguimos ligar ao host",
+            "cannot_connect": "Não foi possível ligar ao controlador LAN Dobiss. Verifique o endereço IP, a porta e se o controlador está ligado.",
+            "unknown": "Erro inesperado, consulte o registo do Home Assistant."
         },
         "abort": {
             "cannot_connect": "Não foi possível ligar ao controlador LAN",

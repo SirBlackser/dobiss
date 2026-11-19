@@ -25,6 +25,12 @@ The main differences for this fork are:
 1. trying to keep up with HA deprecation/new methods
 
 
+## Setup
+
+When you add the integration, it checks that the controller answers before saving. If the controller can't be reached when Home Assistant starts, the integration retries in the background instead of loading without entities.
+
+While the controller doesn't answer a poll, all Dobiss entities show as unavailable, and commands show an error instead of silently doing nothing.
+
 ## Polling and state updates
 
 - The integration uses Home Assistant's DataUpdateCoordinator to poll the Dobiss controller for all output states.
@@ -40,6 +46,27 @@ Recommendations:
 - Setting very low intervals (e.g., <3 seconds) may increase network/CPU load and could make the controller less responsive if multiple clients are connected.
 
 
+## Cover positions
+
+Dobiss only reports whether a cover's up or down relay is on, so by default covers can open, close and stop but have no position. To get a position:
+
+1. Time how many seconds each cover takes to fully open and to fully close.
+2. Go to Settings > Devices & Services > Dobiss Domotics > Configure, save the first page, and enter the times on the second page.
+
+Home Assistant then estimates the position from how long the cover has been moving, and you can move a cover to a given position (for example 40%). Good to know:
+
+- After setting the times, fully open or close each cover once so the position is known.
+- Moves started with a wall button are followed, but they are only seen at the next poll, so the estimate can be off by up to one scan interval. A full open or close corrects it.
+- Leave a time at 0 to keep that cover without position.
+
+## Diagnostics
+
+Settings > Devices & Services > Dobiss Domotics > ⋮ > Download diagnostics gives a file with the modules, outputs, how they were grouped into entities, and the last states. Attach it to bug reports. The controller's IP address is left out.
+
+## Energy usage
+
+The Dobiss controller doesn't measure power. To see estimated usage in the Energy dashboard, install [Powercalc](https://github.com/bramstroker/homeassistant-powercalc) from HACS and give each Dobiss light or socket a fixed wattage.
+
 ## Ventilation
 
 Ventilation units whose speeds are wired as separate Dobiss outputs (for example `Ventilatie 0`, `Ventilatie 2` and `Ventilatie 3`) are combined into a single fan entity instead of separate switches. Outputs are grouped when they are of the fan type, or when their name contains "ventil", and their names differ only in a trailing digit.
@@ -49,3 +76,12 @@ Ventilation units whose speeds are wired as separate Dobiss outputs (for example
 - Modes are exposed as presets (`0`–`3`) and as the speed slider (1 = 33%, 2 = 66%, 3 = 100%). Turning the fan off selects mode 0; turning it on selects the default mode.
 
 The old per-mode entities will show as unavailable after updating and can be removed from Home Assistant.
+
+## Development
+
+The tests run the integration in Home Assistant against a simulated controller:
+
+```
+pip install pytest-homeassistant-custom-component
+pytest
+```

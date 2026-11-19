@@ -1,12 +1,15 @@
 {
   "domain": "dobiss",
   "name": "Dobiss Domotics",
-  "codeowners": ["@OpenJeDi", "@avlemos"],
+  "codeowners": [
+    "@OpenJeDi",
+    "@avlemos"
+  ],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://dobiss.be",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/avlemos/dobiss/issues",
   "requirements": [],
-  "version": "1.0.1"
+  "version": "1.1.0"
 }

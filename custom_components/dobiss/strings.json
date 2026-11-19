@@ -12,7 +12,9 @@
             }
         },
         "error": {
-            "invalid_host": "We cannot connect to the host"
+            "invalid_host": "We cannot connect to the host",
+            "cannot_connect": "Cannot connect to the Dobiss LAN controller. Check the IP address and port, and that the controller is on.",
+            "unknown": "Unexpected error, see the Home Assistant log."
         },
         "abort": {
             "cannot_connect": "Unable to connect to the LAN controller",
@@ -29,10 +31,16 @@
                     "port": "The port to connect to",
                     "scan_interval": "Scan interval (seconds)"
                 }
+            },
+            "covers": {
+                "title": "Cover travel times",
+                "description": "Enter how many seconds each cover takes to fully open and to fully close. Home Assistant then estimates the position and can move a cover to a given position. Leave 0 to keep a cover without position."
             }
         },
         "error": {
-            "invalid_host": "We cannot connect to the host"
+            "invalid_host": "We cannot connect to the host",
+            "cannot_connect": "Cannot connect to the Dobiss LAN controller. Check the IP address and port, and that the controller is on.",
+            "unknown": "Unexpected error, see the Home Assistant log."
         },
         "abort": {
             "cannot_connect": "Unable to connect to the LAN controller",

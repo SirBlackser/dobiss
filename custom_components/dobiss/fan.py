@@ -2,9 +2,9 @@
 import logging
 from .dobiss import DobissSystem
 from .const import DOMAIN
+from .entity import DobissEntity
 
 from homeassistant.components.fan import FanEntity, FanEntityFeature
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util.percentage import (
     ordered_list_item_to_percentage,
     percentage_to_ordered_list_item,
@@ -35,7 +35,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     _LOGGER.info("Dobiss fans added.")
 
 
-class HomeAssistantDobissFan(CoordinatorEntity, FanEntity):
+class HomeAssistantDobissFan(DobissEntity, FanEntity):
     """Representation of a Dobiss fan in HomeAssistant."""
 
     def __init__(self, coordinator, fan):
@@ -43,7 +43,6 @@ class HomeAssistantDobissFan(CoordinatorEntity, FanEntity):
         super().__init__(coordinator)
 
         """Initialize a DobissFan."""
-        self.dobiss = coordinator.dobiss
         self._fan = fan
         self._name = fan['name']
 
@@ -63,18 +62,6 @@ class HomeAssistantDobissFan(CoordinatorEntity, FanEntity):
         return self._name
 
     @property
-    def device_info(self):
-        """Return device info to group all entities under the Dobiss controller."""
-        host = getattr(self.dobiss, 'host', 'dobiss')
-        port = getattr(self.dobiss, 'port', None)
-        ident = f"{host}:{port}" if port is not None else str(host)
-        return {
-            "identifiers": {(DOMAIN, ident)},
-            "name": f"Dobiss Controller {host}",
-            "manufacturer": "Dobiss",
-        }
-
-    @property
     def is_on(self):
         """Return true if the fan is on."""
         mod = self._fan['moduleAddress']
@@ -88,20 +75,20 @@ class HomeAssistantDobissFan(CoordinatorEntity, FanEntity):
     async def async_turn_on(self, **kwargs):
         """Instruct the fan to turn on.
         """
-        await self.dobiss.setOn(self._fan['moduleAddress'], self._fan['index'])
+        await self._command(self.dobiss.setOn(self._fan['moduleAddress'], self._fan['index']))
 
         # Poll states
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Instruct the fan to turn off."""
-        await self.dobiss.setOff(self._fan['moduleAddress'], self._fan['index'])
+        await self._command(self.dobiss.setOff(self._fan['moduleAddress'], self._fan['index']))
 
         # Poll states
         await self.coordinator.async_request_refresh()
 
 
-class HomeAssistantDobissVentilation(CoordinatorEntity, FanEntity):
+class HomeAssistantDobissVentilation(DobissEntity, FanEntity):
     """A ventilation unit with exclusive speed modes (e.g. 0 to 3).
 
     Each mode that has its own Dobiss output is a relay; the mode without an
@@ -113,7 +100,6 @@ class HomeAssistantDobissVentilation(CoordinatorEntity, FanEntity):
 
     def __init__(self, coordinator, group):
         super().__init__(coordinator)
-        self.dobiss = coordinator.dobiss
         self._group = group
         self._name = group['name']
         self._mode_outputs = group['modes']            # {mode: output}
@@ -132,18 +118,6 @@ class HomeAssistantDobissVentilation(CoordinatorEntity, FanEntity):
     @property
     def name(self):
         return self._name
-
-    @property
-    def device_info(self):
-        """Return device info to group all entities under the Dobiss controller."""
-        host = getattr(self.dobiss, 'host', 'dobiss')
-        port = getattr(self.dobiss, 'port', None)
-        ident = f"{host}:{port}" if port is not None else str(host)
-        return {
-            "identifiers": {(DOMAIN, ident)},
-            "name": f"Dobiss Controller {host}",
-            "manufacturer": "Dobiss",
-        }
 
     @property
     def supported_features(self):
@@ -210,7 +184,7 @@ class HomeAssistantDobissVentilation(CoordinatorEntity, FanEntity):
             raise ValueError(f"Invalid ventilation mode {mode} for {self._name}")
         target = self._mode_outputs.get(mode)  # None for the default mode
         others = [o for m, o in self._mode_outputs.items() if m != mode]
-        await self.dobiss.setExclusive(others, target)
+        await self._command(self.dobiss.setExclusive(others, target))
         await self.coordinator.async_request_refresh()
 
     async def async_set_preset_mode(self, preset_mode):

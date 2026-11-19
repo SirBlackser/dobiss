@@ -2,16 +2,31 @@
 import logging
 from typing import Dict, List, Optional, Tuple
 
+from time import monotonic
+from datetime import timedelta
+
 from homeassistant.components.cover import (
+    ATTR_CURRENT_POSITION,
+    ATTR_POSITION,
     CoverEntity,
     CoverEntityFeature,
 )
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, CONF_COVER_TRAVEL, CONF_TRAVEL_UP, CONF_TRAVEL_DOWN
 from .dobiss import DobissSystem
+from .entity import DobissEntity
 
 _LOGGER = logging.getLogger(__name__)
+
+# After we start a cover, ignore polls that still show its relay off for this
+# long: they may have been read just before the command reached the controller.
+MOVE_GRACE = 3
+# How often the position is updated in the UI while a cover moves
+POSITION_TICK = timedelta(seconds=1)
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -19,18 +34,20 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     coordinator = hass.data[DOMAIN]["coordinator"]
 
     # Build covers by pairing Up/Down outputs.
-    covers: List[Dict] = _pair_covers(coordinator.dobiss.outputs)
+    covers: List[Dict] = pair_covers(coordinator.dobiss.outputs)
 
     _LOGGER.info("Adding covers (roller shutters/screens)...")
     _LOGGER.debug(str(covers))
 
+    travel = config_entry.options.get(CONF_COVER_TRAVEL, {})
     async_add_entities(
-        HomeAssistantDobissCover(coordinator, cover) for cover in covers
+        HomeAssistantDobissCover(coordinator, cover, travel.get(cover["unique_id"], {}))
+        for cover in covers
     )
     _LOGGER.info("Dobiss covers added.")
 
 
-def _pair_covers(outputs: List[Dict]) -> List[Dict]:
+def pair_covers(outputs: List[Dict]) -> List[Dict]:
     """Pair Up/Down outputs into single cover descriptors.
 
     Strategy:
@@ -175,94 +192,263 @@ def _build_cover_descriptor(up: Optional[Dict], down: Optional[Dict]) -> Dict:
     }
 
 
-class HomeAssistantDobissCover(CoordinatorEntity, CoverEntity):
-    """Representation of a Dobiss cover (screen or roller shutter)."""
+class HomeAssistantDobissCover(DobissEntity, CoverEntity, RestoreEntity):
+    """Representation of a Dobiss cover (screen or roller shutter).
 
-    def __init__(self, coordinator, cover: Dict):
+    Dobiss only reports whether the up and down relays are on. When the travel
+    times are set in the options, the position is estimated from how long the
+    cover has been moving, which also allows moving it to a given position.
+    """
+
+    def __init__(self, coordinator, cover: Dict, travel: Optional[Dict] = None):
         super().__init__(coordinator)
-        self.dobiss = coordinator.dobiss
         self._cover = cover
         self._name = cover["name"]
+
+        travel = travel or {}
+        self._travel_up = float(travel.get(CONF_TRAVEL_UP) or 0) if cover.get("up") else 0.0
+        self._travel_down = float(travel.get(CONF_TRAVEL_DOWN) or 0) if cover.get("down") else 0.0
+
+        # Estimated position: 0 = closed, 100 = open, None = unknown
+        self._position: Optional[float] = None
+        # +1 opening, -1 closing, 0 standing still
+        self._direction = 0
+        self._move_started_at = 0.0
+        self._move_start_position = 0.0
+        self._target = 0.0
+        self._unsub_stop = None
+        self._unsub_tick = None
 
     @property
     def name(self):
         return self._name
 
     @property
-    def device_info(self):
-        """Return device info to group all cover entities under the Dobiss controller."""
-        host = getattr(self.dobiss, 'host', 'dobiss')
-        port = getattr(self.dobiss, 'port', None)
-        ident = f"{host}:{port}" if port is not None else str(host)
-        return {
-            "identifiers": {(DOMAIN, ident)},
-            "name": f"Dobiss Controller {host}",
-            "manufacturer": "Dobiss",
-        }
-
-    @property
     def unique_id(self):
         return self._cover["unique_id"]
 
     @property
+    def _tracks_position(self) -> bool:
+        """True when every available direction has a travel time."""
+        up, down = self._cover.get("up"), self._cover.get("down")
+        return (
+            (up is None or self._travel_up > 0)
+            and (down is None or self._travel_down > 0)
+            and (self._travel_up > 0 or self._travel_down > 0)
+        )
+
+    @property
     def supported_features(self):
-        features = CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE
-        # We can always stop by switching off both directions
-        features |= CoverEntityFeature.STOP
+        features = CoverEntityFeature.STOP
+        if self._cover.get("up"):
+            features |= CoverEntityFeature.OPEN
+        if self._cover.get("down"):
+            features |= CoverEntityFeature.CLOSE
+        if self._tracks_position:
+            features |= CoverEntityFeature.SET_POSITION
         return features
 
     @property
+    def extra_state_attributes(self):
+        if not self._tracks_position:
+            return None
+        return {"travel_time_up": self._travel_up, "travel_time_down": self._travel_down}
+
+    # ----- state -----
+
+    def _relay_on(self, key) -> bool:
+        output = self._cover.get(key)
+        return bool(output) and self._output_value(output) > 0
+
+    def _live_position(self) -> Optional[float]:
+        if self._direction == 0 or self._position is None:
+            return self._position
+        travel = self._travel_up if self._direction > 0 else self._travel_down
+        elapsed = monotonic() - self._move_started_at
+        position = self._move_start_position + self._direction * elapsed / travel * 100
+        return max(0.0, min(100.0, position))
+
+    @property
+    def current_cover_position(self):
+        if not self._tracks_position:
+            return None
+        position = self._live_position()
+        return None if position is None else round(position)
+
+    @property
     def is_closed(self):
-        # Unknown without position feedback
-        return None
+        if not self._tracks_position:
+            # Unknown without position feedback
+            return None
+        position = self.current_cover_position
+        return None if position is None else position <= 0
 
     @property
     def is_opening(self):
-        up = self._cover.get("up")
-        if not up:
-            return False
-        val = self.coordinator.data.get(up["moduleAddress"], [0] * (up["index"] + 1))[up["index"]]
-        return val == 100
+        if self._tracks_position:
+            return self._direction > 0
+        return self._relay_on("up")
 
     @property
     def is_closing(self):
-        down = self._cover.get("down")
-        if not down:
-            return False
-        val = self.coordinator.data.get(down["moduleAddress"], [0] * (down["index"] + 1))[down["index"]]
-        return val == 100
+        if self._tracks_position:
+            return self._direction < 0
+        return self._relay_on("down")
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        if not self._tracks_position:
+            return
+        last_state = await self.async_get_last_state()
+        if last_state is not None:
+            position = last_state.attributes.get(ATTR_CURRENT_POSITION)
+            if position is not None:
+                self._position = float(position)
+        self._sync_with_relays()
+
+    async def async_will_remove_from_hass(self):
+        self._cancel_timers()
+        await super().async_will_remove_from_hass()
+
+    # ----- position tracking -----
+
+    def _cancel_timers(self):
+        if self._unsub_stop:
+            self._unsub_stop()
+            self._unsub_stop = None
+        if self._unsub_tick:
+            self._unsub_tick()
+            self._unsub_tick = None
+
+    def _begin_tracking(self, direction: int, target: Optional[float] = None):
+        """Start estimating the position of a cover that just started moving."""
+        start = self._live_position()
+        self._cancel_timers()
+        if start is None:
+            # Unknown position: assume it starts from the other end, so a full
+            # run leaves the position known.
+            start = 0.0 if direction > 0 else 100.0
+        if target is None:
+            target = 100.0 if direction > 0 else 0.0
+
+        self._position = start
+        self._move_start_position = start
+        self._direction = direction
+        self._target = target
+        self._move_started_at = monotonic()
+
+        travel = self._travel_up if direction > 0 else self._travel_down
+        duration = abs(target - start) / 100 * travel
+        self._unsub_stop = async_call_later(self.hass, duration, self._async_reached_target)
+        self._unsub_tick = async_track_time_interval(self.hass, self._async_tick, POSITION_TICK)
+
+    def _end_tracking(self):
+        """Freeze the position where the cover is now."""
+        self._position = self._live_position()
+        self._direction = 0
+        self._cancel_timers()
+
+    @callback
+    def _async_tick(self, _now):
+        self.async_write_ha_state()
+
+    async def _async_reached_target(self, _now):
+        self._unsub_stop = None
+        target = self._target
+        direction = self._direction
+        self._end_tracking()
+        self._position = target
+        self.async_write_ha_state()
+        if target in (0.0, 100.0):
+            # A full run ends at the motor's end stop; leave the relay to the controller
+            return
+        output = self._cover.get("up" if direction > 0 else "down")
+        try:
+            await self._command(self.dobiss.setOff(output["moduleAddress"], output["index"]))
+        except HomeAssistantError as err:
+            _LOGGER.error("Could not stop cover '%s' at %s%%: %s", self._name, round(target), err)
+        await self.coordinator.async_request_refresh()
+
+    def _sync_with_relays(self):
+        """Follow moves started or stopped outside Home Assistant (wall buttons, timers)."""
+        up_on = self._relay_on("up")
+        down_on = self._relay_on("down")
+
+        if self._direction != 0:
+            moving_relay_on = up_on if self._direction > 0 else down_on
+            if moving_relay_on or monotonic() - self._move_started_at < MOVE_GRACE:
+                return
+            # The relay went off before we expected: the cover stopped
+            self._end_tracking()
+
+        position = self._position
+        if up_on and not down_on and (position is None or position < 100):
+            self._begin_tracking(1)
+        elif down_on and not up_on and (position is None or position > 0):
+            self._begin_tracking(-1)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        if self._tracks_position:
+            self._sync_with_relays()
+        super()._handle_coordinator_update()
+
+    # ----- commands -----
 
     async def async_open_cover(self, **kwargs):
         up = self._cover.get("up")
         if not up:
             _LOGGER.warning("No Up output available for cover '%s'", self._name)
             return
-        # Ensure Down is off
-        await self._turn_dir(off=self._cover.get("down"))
-        # Start Up
-        await self._turn_dir(on=up)
-        await self.coordinator.async_request_refresh()
+        await self._move(1)
 
     async def async_close_cover(self, **kwargs):
         down = self._cover.get("down")
         if not down:
             _LOGGER.warning("No Down output available for cover '%s'", self._name)
             return
-        # Ensure Up is off
-        await self._turn_dir(off=self._cover.get("up"))
-        # Start Down
-        await self._turn_dir(on=down)
-        await self.coordinator.async_request_refresh()
+        await self._move(-1)
+
+    async def async_set_cover_position(self, **kwargs):
+        target = float(kwargs[ATTR_POSITION])
+        if not self._tracks_position:
+            raise HomeAssistantError(f"Set the travel times of '{self._name}' in the Dobiss options first")
+        current = self._live_position()
+        if current is None:
+            raise HomeAssistantError(
+                f"The position of '{self._name}' is unknown: fully open or close it once first")
+        if target >= 100:
+            await self.async_open_cover()
+        elif target <= 0:
+            await self.async_close_cover()
+        elif abs(target - current) >= 1:
+            await self._move(1 if target > current else -1, target)
 
     async def async_stop_cover(self, **kwargs):
+        if self._tracks_position:
+            self._end_tracking()
+            self.async_write_ha_state()
         # Stop by turning both directions off
         await self._turn_dir(off=self._cover.get("up"))
         await self._turn_dir(off=self._cover.get("down"))
         await self.coordinator.async_request_refresh()
 
+    async def _move(self, direction: int, target: Optional[float] = None):
+        on = self._cover.get("up" if direction > 0 else "down")
+        off = self._cover.get("down" if direction > 0 else "up")
+        if self._tracks_position and self._direction != 0:
+            self._end_tracking()
+        # Ensure the other direction is off before starting this one
+        await self._turn_dir(off=off)
+        await self._turn_dir(on=on)
+        if self._tracks_position:
+            self._begin_tracking(direction, target)
+            self.async_write_ha_state()
+        await self.coordinator.async_request_refresh()
+
     async def _turn_dir(self, on: Optional[Dict] = None, off: Optional[Dict] = None):
         if off:
-            await self.dobiss.setOff(off["moduleAddress"], off["index"])
+            await self._command(self.dobiss.setOff(off["moduleAddress"], off["index"]))
         if on:
             # Use relay-type action: 100% on
-            await self.dobiss.setOn(on["moduleAddress"], on["index"], 100)
+            await self._command(self.dobiss.setOn(on["moduleAddress"], on["index"], 100))
