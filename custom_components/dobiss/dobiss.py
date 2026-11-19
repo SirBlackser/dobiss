@@ -10,6 +10,7 @@ from enum import IntEnum
 RECV_SIZE = 1024
 MAX_NUM_RETRIES = 10
 TIMEOUT = 1  # We can use a short timeout on the LAN
+ACK_TIMEOUT = 2  # Seconds to wait for the controller to echo a command
 RETRY_DELAY = 1  # Set the delay between retries in seconds
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,6 +33,9 @@ class DobissSystem:
         # status poll racing a light toggle) must not interleave their
         # sendData/receiveResponse pairs.
         self._lock = asyncio.Lock()
+        # Separate lock so two callers connecting at once share one connection
+        # instead of the second overwriting the first one's stream.
+        self._connect_lock = asyncio.Lock()
 
         self.availableModules = []
         self.modules = {}
@@ -134,6 +138,10 @@ class DobissSystem:
         """Connect to a Dobiss system.
            Keeps trying to connect until it is successfully connected.
         """
+        async with self._connect_lock:
+            await self._connect_with_retries()
+
+    async def _connect_with_retries(self):
         retry_delay = 1  # Initial delay in seconds
         retries = 0
         while not self._connected and retries < MAX_NUM_RETRIES:
@@ -170,6 +178,7 @@ class DobissSystem:
             self._reader = None
             self._writer = None
             self._connected = False
+            self.recvBuffer = bytearray()
 
     async def sendData(self, data):
         """Send data to a Dobiss system.
@@ -379,6 +388,9 @@ class DobissSystem:
             "AF 01 " + f"{moduleType.value:02x}" + f"{moduleAddr:02x}" + " 00 00 00 01 00 FF FF FF FF FF FF AF")
 
         async with self._lock:
+            # A command may have closed the connection while we waited for the lock
+            if not self.connected:
+                await self.connect()
             await self.sendData(data)
             statusData = await self.receiveResponse(len(data), 16)
 
@@ -449,28 +461,36 @@ class DobissSystem:
     async def sendAction(self, moduleAddr, outputIndex, action, value=100, delayOn=0xFF, delayOff=0xFF, softDim=0xFF,
                    red=0xFF):
         """Generic method to send an action to an output.
-        Ensures connection is available for the duration of the command and
-        releases it afterwards if we established it here.
+        Holds the request lock for the whole exchange so a status poll can't
+        interleave with it, waits for the controller to echo each packet, and
+        releases the connection afterwards if we established it here.
         """
         _LOGGER.debug("sendAction")
-        established_here = False
-        if not self.connected:
-            await self.connect()
-            established_here = True
+        async with self._lock:
+            established_here = False
+            if not self.connected:
+                await self.connect()
+                established_here = True
+            try:
+                # Send the request header; the controller only echoes it back
+                headerData = bytearray.fromhex("AF 02 FF " + f"{moduleAddr:02x}" + " 00 00 08 01 08 FF FF FF FF FF FF AF")
+                await self.sendData(headerData)
+                await self._receiveAck(len(headerData))
+
+                # Send the request data; again only an echo comes back
+                requestData = bytes((moduleAddr, outputIndex, action.value, delayOn, delayOff, int(value), softDim, red))
+                await self.sendData(requestData)
+                await self._receiveAck(len(requestData))
+            finally:
+                if established_here:
+                    self.disconnect()
+
+    async def _receiveAck(self, sentDataSize):
+        """Wait for the controller to echo a packet that has no response data.
+        Gives up after ACK_TIMEOUT seconds so a missing echo can't block the lock."""
         try:
-            # Send the request header
-            headerData = bytearray.fromhex("AF 02 FF " + f"{moduleAddr:02x}" + " 00 00 08 01 08 FF FF FF FF FF FF AF")
-            await self.sendData(headerData)
-
-            # Note: no additional data is sent back
-            self.receiveResponse(len(headerData), 0)
-
-            # Send the request data
-            requestData = bytes((moduleAddr, outputIndex, action.value, delayOn, delayOff, int(value), softDim, red))
-            await self.sendData(requestData)
-
-            # Note: no additional data is sent back
-            self.receiveResponse(len(requestData), 0)
-        finally:
-            if established_here:
-                self.disconnect()
+            await asyncio.wait_for(self.receiveResponse(sentDataSize, 0), ACK_TIMEOUT)
+        except asyncio.TimeoutError:
+            _LOGGER.warning("No acknowledgement from the Dobiss controller; continuing")
+            # Whatever arrives late would misalign the next response
+            self.recvBuffer = bytearray()
